@@ -883,21 +883,42 @@ impl SkinSlots {
 /// A GET over HTTP or HTTPS (textures.minecraft.net serves both; vanilla
 /// uses https): the body of a 2xx answer, 16 MiB at most, after redirects.
 fn http_get(url: &str) -> Option<Vec<u8>> {
-    use std::io::Read;
-    let response = ureq::AgentBuilder::new()
-        .timeout(web_time::Duration::from_secs(15))
-        .user_agent("Java")
-        .build()
-        .get(url)
-        .call()
-        .ok()?;
-    let mut body = Vec::new();
-    response
-        .into_reader()
-        .take(16 << 20)
-        .read_to_end(&mut body)
-        .ok()?;
-    Some(body)
+    #[cfg(target_family = "wasm")]
+    {
+        // ureq needs std::time::Instant, which panics on wasm. The page/Worker
+        // does a sync XHR through Astris `/fetch` (CORS-safe).
+        return http_get_browser(url);
+    }
+    #[cfg(not(target_family = "wasm"))]
+    {
+        use std::io::Read;
+        let response = ureq::AgentBuilder::new()
+            .timeout(web_time::Duration::from_secs(15))
+            .user_agent("Java")
+            .build()
+            .get(url)
+            .call()
+            .ok()?;
+        let mut body = Vec::new();
+        response
+            .into_reader()
+            .take(16 << 20)
+            .read_to_end(&mut body)
+            .ok()?;
+        Some(body)
+    }
+}
+
+#[cfg(target_family = "wasm")]
+#[wasm_bindgen::prelude::wasm_bindgen]
+extern "C" {
+    #[wasm_bindgen(js_namespace = globalThis, js_name = horizonHttpGet)]
+    fn horizon_http_get_js(url: &str) -> Option<Vec<u8>>;
+}
+
+#[cfg(target_family = "wasm")]
+fn http_get_browser(url: &str) -> Option<Vec<u8>> {
+    horizon_http_get_js(url)
 }
 
 /// SHA-1 (FIPS 180-4).

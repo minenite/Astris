@@ -41,6 +41,20 @@ export function runRustWorker(initSync, entryPoint, {destroyArgs}) {
       return `0:${error.message || 'join proxy failed'}`;
     }
   };
+  // Skin/cape/profile HTTP: ureq panics on wasm (std::time::Instant). Same-origin
+  // /fetch proxy avoids CORS and Instant.
+  globalThis.horizonHttpGet = url => {
+    try {
+      const xhr = new XMLHttpRequest();
+      xhr.open('GET', `/fetch?url=${encodeURIComponent(url)}`, false);
+      xhr.responseType = 'arraybuffer';
+      xhr.send();
+      if (xhr.status < 200 || xhr.status >= 300) return undefined;
+      return new Uint8Array(xhr.response);
+    } catch (_) {
+      return undefined;
+    }
+  };
   self.addEventListener('error', event => send('failure', event.error?.stack || event.message));
   self.addEventListener('unhandledrejection', event => send('failure', event.reason?.stack || String(event.reason)));
 

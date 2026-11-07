@@ -262,6 +262,61 @@ class Handler(SimpleHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def _fetch_proxy(self) -> bool:
+        """Same-origin GET proxy for skin/cape/profile URLs (wasm has no ureq)."""
+        path = urlsplit(self.path).path
+        if path != '/fetch':
+            return False
+        host = (self.headers.get('Host') or '').rsplit(':', 1)[0].lower()
+        if host not in LOCAL_HOSTS:
+            self.send_error(421, 'Unknown host')
+            return True
+        if not self._same_site():
+            return True
+        raw = (parse_qs(urlsplit(self.path).query).get('url') or [''])[0]
+        try:
+            target = urlsplit(raw)
+        except ValueError:
+            self.send_error(400, 'Bad url')
+            return True
+        if target.scheme not in ('http', 'https') or not target.hostname:
+            self.send_error(400, 'Bad url')
+            return True
+        allowed = (
+            'textures.minecraft.net',
+            'sessionserver.mojang.com',
+            'api.minecraftservices.com',
+            'launchercontent.mojang.com',
+            'minecraft.wiki',
+            'crafatar.com',
+            'minotar.net',
+            'mc-heads.net',
+            'visage.surgeplay.com',
+        )
+        hostname = target.hostname.lower()
+        if hostname not in allowed and not hostname.endswith('.minecraft.net'):
+            self.send_error(403, 'Host not allowed')
+            return True
+        try:
+            import urllib.request
+            req = urllib.request.Request(
+                raw,
+                headers={'User-Agent': 'Java', 'Accept': '*/*'},
+                method='GET',
+            )
+            with urllib.request.urlopen(req, timeout=20) as resp:
+                body = resp.read(16 << 20)
+                ctype = resp.headers.get('Content-Type', 'application/octet-stream')
+                self.send_response(200)
+                self.send_header('Content-Type', ctype)
+                self.send_header('Content-Length', str(len(body)))
+                self.send_header('Cache-Control', 'no-cache')
+                self.end_headers()
+                self.wfile.write(body)
+        except Exception as e:  # noqa: BLE001
+            self.send_error(502, f'fetch failed: {e}')
+        return True
+
     def _auth_get(self) -> bool:
         """MSA session mint / device-code for the browser client. Returns True if handled."""
         path = urlsplit(self.path).path
@@ -295,6 +350,8 @@ class Handler(SimpleHTTPRequestHandler):
 
     def do_GET(self):
         if self._minecraft_tcp_upgrade():
+            return
+        if self._fetch_proxy():
             return
         if self._auth_get():
             return
