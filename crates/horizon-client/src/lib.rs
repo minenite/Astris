@@ -84,6 +84,7 @@ pub mod net;
 pub mod nether_portal;
 pub mod offline_name;
 pub mod peer;
+pub mod ws_bridge;
 pub mod osk;
 pub mod patrol;
 pub mod perf_overlay;

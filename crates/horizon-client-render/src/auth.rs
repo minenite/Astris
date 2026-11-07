@@ -217,20 +217,57 @@ pub fn join_request(session: &AuthSession, server_hash: &str) -> String {
 /// MinecraftServicesSessionService.joinServer: tell the session service this
 /// account is joining the server whose hash is `server_hash`.
 pub fn join_server(session: &AuthSession, server_hash: &str) -> Result<(), JoinError> {
-    let doc = discovery()?;
-    let url = endpoint(&doc, "session", "join").ok_or(JoinError::Unavailable)?;
-    match agent()
-        .post(&url)
-        .set("Content-Type", "application/json; charset=utf-8")
-        .send_string(&join_request(session, server_hash))
+    let body = join_request(session, server_hash);
+    #[cfg(target_family = "wasm")]
     {
-        Ok(_) => Ok(()),
-        Err(ureq::Error::Status(status, response)) => Err(JoinError::from_response(
-            status,
-            &response.into_string().unwrap_or_default(),
-        )),
-        Err(ureq::Error::Transport(_)) => Err(JoinError::Unavailable),
+        // No TLS sockets in the browser build: the page's sync XHR hits Astris
+        // `/auth/join`, which forwards to the Minecraft session service.
+        return join_server_browser(&body);
     }
+    #[cfg(not(target_family = "wasm"))]
+    {
+        let doc = discovery()?;
+        let url = endpoint(&doc, "session", "join").ok_or(JoinError::Unavailable)?;
+        match agent()
+            .post(&url)
+            .set("Content-Type", "application/json; charset=utf-8")
+            .send_string(&body)
+        {
+            Ok(_) => Ok(()),
+            Err(ureq::Error::Status(status, response)) => Err(JoinError::from_response(
+                status,
+                &response.into_string().unwrap_or_default(),
+            )),
+            Err(ureq::Error::Transport(_)) => Err(JoinError::Unavailable),
+        }
+    }
+}
+
+#[cfg(target_family = "wasm")]
+#[wasm_bindgen::prelude::wasm_bindgen]
+extern "C" {
+    #[wasm_bindgen(js_namespace = globalThis, js_name = horizonAuthJoin)]
+    fn horizon_auth_join_js(body: &str) -> String;
+}
+
+#[cfg(target_family = "wasm")]
+fn join_server_browser(body: &str) -> Result<(), JoinError> {
+    let reply = horizon_auth_join_js(body);
+    if reply.is_empty() {
+        return Ok(());
+    }
+    let (status_text, rest) = reply
+        .split_once(':')
+        .map(|(s, r)| (s, r))
+        .unwrap_or(("0", reply.as_str()));
+    let status: u16 = status_text.parse().unwrap_or(0);
+    if (200..300).contains(&status) {
+        return Ok(());
+    }
+    if status == 0 {
+        return Err(JoinError::Unavailable);
+    }
+    Err(JoinError::from_response(status, rest))
 }
 
 /// What the session service says about a player joining this server

@@ -17,7 +17,14 @@ pub mod mounted {
         sync::{Arc, OnceLock, RwLock, RwLockReadGuard, RwLockWriteGuard, TryLockError},
     };
 
-    const LIMIT: usize = 256 * 1024 * 1024;
+    // Mounted menu + world bytes (OPFS → wasm heap). Minecraft 26.3 prepared
+    // data is ~600–900 MiB; 256 MiB was too small and aborted launch with
+    // "browser resource budget exceeded". Leave headroom under wasm32's 4 GiB
+    // max-memory / wasm64's larger heap (same split as session_io).
+    #[cfg(target_pointer_width = "64")]
+    const LIMIT: usize = 3072 * 1024 * 1024;
+    #[cfg(not(target_pointer_width = "64"))]
+    const LIMIT: usize = 1536 * 1024 * 1024;
     #[derive(Default)]
     struct Store {
         bytes: usize,

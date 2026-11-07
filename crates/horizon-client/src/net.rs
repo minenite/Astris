@@ -417,6 +417,12 @@ fn run(
         };
         status(send, "Connecting to the server...");
         ("astris-peer".to_owned(), 25565, Connection::local(pipe))
+    } else if let Some(id) = address.strip_prefix(crate::ws_bridge::PREFIX) {
+        let Some((pipe, host, port)) = id.parse().ok().and_then(crate::ws_bridge::take_dialed) else {
+            return Ok("WebSocket bridge is not ready".into());
+        };
+        status(send, "Connecting to the server...");
+        (host, port, Connection::local(pipe))
     } else {
         let (host, port) = match address.strip_prefix(FRIEND) {
             Some(code) => join_friend(code, send)?,
@@ -428,6 +434,31 @@ fn run(
                 target
             }
         };
+        #[cfg(target_family = "wasm")]
+        let c = {
+            // No TCP in the browser: page opens same-origin /minecraft-tcp and we wait.
+            status(send, "Opening local WebSocket bridge…");
+            let id = crate::ws_bridge::begin(&format!("{host}:{port}"));
+            let deadline = web_time::Instant::now() + Duration::from_secs(20);
+            while web_time::Instant::now() < deadline {
+                if crate::ws_bridge::is_open(id) {
+                    break;
+                }
+                horizon_threads::sleep(std::time::Duration::from_millis(25));
+            }
+            if !crate::ws_bridge::is_open(id) {
+                crate::ws_bridge::close(id);
+                return Ok(
+                    "Timed out waiting for /minecraft-tcp (restart the Astris page server)."
+                        .into(),
+                );
+            }
+            let Some((pipe, _, _)) = crate::ws_bridge::take_dialed(id) else {
+                return Ok("WebSocket bridge closed before join".into());
+            };
+            Connection::local(pipe)
+        };
+        #[cfg(not(target_family = "wasm"))]
         let c = if address.starts_with(FRIEND) {
             // The friends relay supplies a concrete endpoint, not a Minecraft hostname.
             Connection::connect(&host, port, Duration::from_secs(10))

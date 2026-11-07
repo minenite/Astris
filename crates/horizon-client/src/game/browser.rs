@@ -199,11 +199,7 @@ impl ApplicationHandler for BrowserHost {
         if loading.renderer.is_some() {
             let shown = loading.shown;
             loading.window_event(events, id, event);
-            // Raw network connections are outside this browser port's scope.
-            if matches!(loading.menu.pending, Some(PendingWorldEntry::Server { .. })) {
-                loading.menu.pending = None;
-                notice_js("Multiplayer is off in the browser version.");
-            }
+            // Multiplayer: Server pending joins via ws_bridge + tcp-bridge.js (:8768).
             if redraw && loading.error.is_none() {
                 frame_js();
                 if !shown && loading.shown {
@@ -686,6 +682,62 @@ pub fn horizon_peer_take(id: u32, max: u32) -> Option<Vec<u8>> {
 #[wasm_bindgen::prelude::wasm_bindgen]
 pub fn horizon_peer_close(id: u32) {
     horizon_client::peer::close(id);
+}
+
+/// Hand the page's Microsoft session to the game (Horizon session JSON).
+/// Empty string on success; an error message otherwise.
+#[wasm_bindgen::prelude::wasm_bindgen]
+pub fn horizon_auth_set(json: &str) -> String {
+    match horizon_client::auth::AuthSession::parse(json) {
+        Ok(session) => {
+            let name = session.name.clone();
+            horizon_client::auth::set_current(session);
+            log::info!("Browser: signed in as {name}");
+            String::new()
+        }
+        Err(e) => e,
+    }
+}
+
+// ---- Dedicated server via local WebSocket↔TCP proxy (tcp-bridge.js + :8768) ----
+
+/// Oldest bridge waiting for the page to open a WebSocket, or 0.
+#[wasm_bindgen::prelude::wasm_bindgen]
+pub fn horizon_ws_pending_id() -> u32 {
+    horizon_client::ws_bridge::pending()
+        .map(|(id, _)| id)
+        .unwrap_or(0)
+}
+
+/// Target `host:port` for [`horizon_ws_pending_id`], if any.
+#[wasm_bindgen::prelude::wasm_bindgen]
+pub fn horizon_ws_pending_addr() -> Option<String> {
+    horizon_client::ws_bridge::pending().map(|(_, addr)| addr)
+}
+
+/// The page's WebSocket to the proxy reached OPEN.
+#[wasm_bindgen::prelude::wasm_bindgen]
+pub fn horizon_ws_mark_open(id: u32) {
+    horizon_client::ws_bridge::mark_open(id);
+}
+
+/// Bytes from the WebSocket; false once the pipe closed.
+#[wasm_bindgen::prelude::wasm_bindgen]
+pub fn horizon_ws_push(id: u32, data: &[u8]) -> bool {
+    horizon_client::ws_bridge::push(id, data)
+}
+
+/// Up to `max` bytes for the WebSocket, or nothing once closed with nothing left.
+#[wasm_bindgen::prelude::wasm_bindgen]
+pub fn horizon_ws_take(id: u32, max: u32) -> Option<Vec<u8>> {
+    let (bytes, closed) = horizon_client::ws_bridge::take(id, max as usize);
+    (!closed || !bytes.is_empty()).then_some(bytes)
+}
+
+/// The WebSocket closed.
+#[wasm_bindgen::prelude::wasm_bindgen]
+pub fn horizon_ws_close(id: u32) {
+    horizon_client::ws_bridge::close(id);
 }
 
 /// Updates the worker thread count (`1..=8`) live from the host UI.

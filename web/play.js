@@ -9,6 +9,8 @@ import {analyze} from './journal.js';
 import * as sounds from './sounds.js';
 import * as resources from './horizon-import.js';
 import * as peer from './peer.js';
+import * as tcpBridge from './tcp-bridge.js';
+import * as authBridge from './auth-bridge.js';
 
 // The page is up: its own error screen takes over from guard.js.
 window.astrisReady = true;
@@ -175,7 +177,11 @@ globalThis.Worker = class extends NativeWorker {
       else if (kind === 'failure') window.horizonFailure(`Worker ${data.name}: ${data.message}`);
       else if (kind !== 'ready') log(kind.toUpperCase(), `[${data.name}] ${data.message}`);
     });
-    this.addEventListener('error', event => window.horizonFailure(`Worker: ${event.message}`));
+    this.addEventListener('error', event => {
+      // Chrome often leaves message undefined when the worker script 404s / server dies.
+      const detail = event.message || event.error?.message || event.filename || 'script failed to load';
+      window.horizonFailure(`Worker: ${detail}`);
+    });
   }
   terminate() { workers.delete(this); super.terminate(); }
 };
@@ -540,6 +546,14 @@ async function boot() {
   if (PEER_ENABLED) {
     peer.attach(module, log);
     setupPeer();
+  }
+  // Dedicated servers: same-origin WS↔TCP at /minecraft-tcp (dev_server).
+  tcpBridge.attach(module, log);
+  // Online-mode: Prism / Minenite / device-code → horizon_auth_set + /auth/join.
+  try {
+    await authBridge.attachAccount(module, log);
+  } catch (error) {
+    log('WARN', `Microsoft account: ${error.message || error}`);
   }
 
   // The launcher's worker count applies on start; in-game changes flow back to it.
