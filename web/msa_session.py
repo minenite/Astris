@@ -1,15 +1,18 @@
 """Mint a Horizon-style MSA session for Astris (localhost only).
 
 Sources, in order:
-  1. PrismLauncher accounts.json (Flatpak + native paths)
-  2. ~/.minecraft/minenite-accounts.json (login.live.com / Xbox app id)
-  3. Optional device-code sign-in (same public client Minenite uses)
+  1. Official Minecraft launcher (launcher_accounts.json + Secret Service
+     schema com.mojang.tokenstore — same path Minenite uses)
+  2. PrismLauncher accounts.json (Flatpak + native paths)
+  3. ~/.minecraft/minenite-accounts.json
+  4. Optional device-code sign-in (Xbox public client)
 
 Never logs tokens. Used by dev_server /auth/*.
 """
 from __future__ import annotations
 
 import json
+import subprocess
 import threading
 import time
 import urllib.error
@@ -26,8 +29,11 @@ LIVE_SCOPE = "service::user.auth.xboxlive.com::MBI_SSL"
 AZURE_TOKEN = "https://login.microsoftonline.com/consumers/oauth2/v2.0/token"
 AZURE_SCOPE = "XboxLive.signin offline_access"
 DISCOVERY = "https://discovery.minecraftservices.com/minecraft/client"
+# Mojang wraps launcher secrets with this GUID + 24 bytes of metadata.
+MOJANG_WRAP = "8E184B2C-7E2D-4517-A905-623B1BE84B57"
 
 HOME = Path.home()
+LAUNCHER_ACCOUNTS = HOME / ".minecraft" / "launcher_accounts.json"
 PRISM_PATHS = [
     HOME / ".var/app/org.prismlauncher.PrismLauncher/data/PrismLauncher/accounts.json",
     HOME / ".local/share/PrismLauncher/accounts.json",
@@ -124,6 +130,176 @@ def _exchange_microsoft(ms: dict) -> dict:
         "refresh_token": refresh,
         "source": "minted",
     }
+
+
+def _mojang_unwrap(raw: str) -> str:
+    if not raw or len(raw) < len(MOJANG_WRAP) + 24:
+        return raw or ""
+    if raw[: len(MOJANG_WRAP)].upper() != MOJANG_WRAP.upper():
+        return raw
+    return raw[len(MOJANG_WRAP) + 24 :]
+
+
+def _mojang_secret_map() -> dict[str, str]:
+    """label → secret from Freedesktop Secret Service (com.mojang.tokenstore)."""
+    try:
+        out = subprocess.check_output(
+            ["secret-tool", "search", "--all", "xdg:schema", "com.mojang.tokenstore"],
+            stderr=subprocess.DEVNULL,
+            text=True,
+            timeout=20,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return {}
+    found: dict[str, str] = {}
+    label = ""
+    for line in out.splitlines():
+        if line.startswith("label = "):
+            label = line[8:].strip()
+        elif line.startswith("secret = ") and label:
+            found[label] = line[9:]
+            label = ""
+    return found
+
+
+def _mojang_refresh(secrets: dict[str, str], xuid: str) -> str:
+    preferred = ""
+    foci = ""
+    for label, raw in secrets.items():
+        if not label.startswith(f"{xuid}|") or ".Msa." not in label:
+            continue
+        payload = _mojang_unwrap(raw)
+        if not payload.startswith("{"):
+            continue
+        try:
+            refresh = json.loads(payload).get("refresh_token") or ""
+        except json.JSONDecodeError:
+            continue
+        if not refresh:
+            continue
+        if ".Foci." in label:
+            foci = refresh
+        else:
+            preferred = refresh
+    return preferred or foci
+
+
+def _session_from_mc_token(mc_token: str, refresh: str, source: str) -> dict:
+    profile = _http_json(
+        "https://api.minecraftservices.com/minecraft/profile",
+        headers={"Authorization": f"Bearer {mc_token}"},
+    )
+    name = profile.get("name") or ""
+    uuid = profile.get("id") or ""
+    if not name or not uuid:
+        raise RuntimeError("Minecraft profile missing for launcher token")
+    return {
+        "name": name,
+        "uuid": uuid,
+        "access_token": mc_token,
+        "user_type": "msa",
+        "xuid": uuid,
+        "refresh_token": refresh,
+        "source": source,
+    }
+
+
+def _try_mojang_launcher() -> dict | None:
+    """Active account from the official Minecraft Java launcher."""
+    if not LAUNCHER_ACCOUNTS.is_file():
+        return None
+    data = json.loads(LAUNCHER_ACCOUNTS.read_text())
+    accounts = data.get("accounts") or {}
+    if not isinstance(accounts, dict) or not accounts:
+        return None
+    active = data.get("activeAccountLocalId") or ""
+    acc = accounts.get(active) if active else None
+    if not isinstance(acc, dict):
+        # Fall back to first profile that has a Minecraft name.
+        acc = next(
+            (
+                a
+                for a in accounts.values()
+                if isinstance(a, dict) and (a.get("minecraftProfile") or {}).get("name")
+            ),
+            None,
+        )
+    if not isinstance(acc, dict):
+        return None
+    profile = acc.get("minecraftProfile") or {}
+    name = profile.get("name") or ""
+    uuid = profile.get("id") or ""
+    local_id = acc.get("localId") or active or ""
+    xuid = acc.get("remoteId") or ""
+    if not name or not uuid:
+        return None
+
+    secrets = _mojang_secret_map()
+    if not secrets:
+        # Empty accessToken in launcher_accounts.json is normal; tokens live in the keyring.
+        raise RuntimeError(
+            "Official launcher accounts found, but Secret Service has no com.mojang.tokenstore entries "
+            "(unlock the keyring / open the Minecraft launcher once)."
+        )
+
+    refresh = _mojang_refresh(secrets, xuid) if xuid else ""
+    # Prefer a still-valid Minecraft JWT already stored under the account localId.
+    direct = _mojang_unwrap(secrets.get(local_id, ""))
+    if direct.count(".") == 2:
+        try:
+            return _session_from_mc_token(direct, refresh, "minecraft-launcher")
+        except Exception:
+            pass
+
+    if not refresh:
+        raise RuntimeError(
+            f"Official launcher account {name} has no MSA refresh token in the keyring."
+        )
+    try:
+        ms = _http_form(
+            LIVE_TOKEN,
+            {
+                "grant_type": "refresh_token",
+                "client_id": XBOX_CLIENT_ID,
+                "refresh_token": refresh,
+                "scope": LIVE_SCOPE,
+            },
+        )
+    except urllib.error.HTTPError as e:
+        raise RuntimeError(
+            f"Official launcher refresh failed: {e.read().decode(errors='replace')[:180]}"
+        ) from e
+    session = _exchange_microsoft(ms)
+    session["source"] = "minecraft-launcher"
+    # Keep Minenite's cache warm so other tools benefit.
+    try:
+        MINENITE_PATH.parent.mkdir(parents=True, exist_ok=True)
+        uid = session["uuid"]
+        if "-" not in uid and len(uid) == 32:
+            uid = f"{uid[:8]}-{uid[8:12]}-{uid[12:16]}-{uid[16:20]}-{uid[20:]}"
+        MINENITE_PATH.write_text(
+            json.dumps(
+                {
+                    "accounts": [
+                        {
+                            "uuid": uid,
+                            "name": session["name"],
+                            "refreshToken": session.get("refresh_token") or refresh,
+                            "mcToken": session["access_token"],
+                            "mcExpiresAt": int(time.time() * 1000) + 20 * 3600 * 1000,
+                            "source": "launcher",
+                            "xuid": xuid,
+                        }
+                    ],
+                    "active": "0",
+                },
+                indent=2,
+            )
+            + "\n"
+        )
+    except OSError:
+        pass
+    return session
 
 
 def _try_prism() -> dict | None:
@@ -330,7 +506,11 @@ def mint_session(force: bool = False) -> dict:
             }
 
     errors: list[str] = []
-    for label, fn in (("prism", _try_prism), ("minenite", _try_minenite)):
+    for label, fn in (
+        ("minecraft-launcher", _try_mojang_launcher),
+        ("prism", _try_prism),
+        ("minenite", _try_minenite),
+    ):
         try:
             session = fn()
             if session:
@@ -340,7 +520,7 @@ def mint_session(force: bool = False) -> dict:
 
     detail = "; ".join(errors) if errors else "no saved Microsoft account on this computer"
     raise RuntimeError(
-        "Sign in required. Open Prism and sign in, or use Astris device sign-in. "
+        "Sign in required. Open the Minecraft launcher once (or Prism), or use Astris device sign-in. "
         + detail
     )
 

@@ -65,12 +65,12 @@ export async function attachAccount(module, logger) {
     return null;
   }
   let session;
+  // Prefer the official Minecraft launcher keyring (silent). Device code only if nothing works.
   const minted = await fetchJson('/auth/session');
   if (minted.ok && minted.data.access_token) {
     session = minted.data;
   } else {
     log('HOST', minted.data.error || 'No saved MSA; starting device sign-in');
-    notice(minted.data.error || 'Microsoft sign-in required for online servers');
     session = await deviceSignIn();
   }
   const payload = JSON.stringify({
