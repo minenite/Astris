@@ -344,7 +344,7 @@ addEventListener('keydown', event => {
 }, {capture: true});
 
 // ---- Play together (peer.js): the panel, Ctrl+Shift+M ----
-const PEER_ENABLED = false;
+const PEER_ENABLED = true;
 let peerShown = false;
 function showPeer(open) {
   $('#peer').hidden = !open;
