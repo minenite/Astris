@@ -52,7 +52,7 @@ Astris has no server side. Game files, worlds, settings and logs are stored in y
 - **On laptops with two graphics cards**, the game may run on the integrated one. It still works, only slower. This depends on your system settings, not on the site.
 - **A very high render distance can crash the tab.** We recommend keeping it at 12 chunks or lower. The 64-bit build (Settings → Experimental) allows more, but it is less tested and may cause other problems.
 - **The first visit to a large world can take a while**, since the world loads gradually around you.
-- **There is no multiplayer yet.** Playing together is planned for a future version.
+- **There is no multiplayer yet.** Playing together is planned for a future version. Dedicated Horizon servers can already load Minenite [CardForgeRust](https://github.com/minenite/cardforgerust) plugins; see [docs/cardforge-rust.md](docs/cardforge-rust.md).
 
 ### 📝 Reporting a problem
 
