@@ -7,7 +7,7 @@ import * as prefs from './settings.js';
 import {t, setLang, apply, LANGUAGES, locale} from './i18n.js';
 import {icon, fillIcons} from './icons.js';
 import {startSky} from './sky.js';
-import {analyze} from './log-view.js';
+import {analyze} from './journal.js';
 import * as resources from './horizon-import.js';
 
 const LAUNCHER_VERSION = '0.1.0';
@@ -45,7 +45,7 @@ const SOURCES = [
 
 const $ = s => document.querySelector(s);
 
-// ---- The launcher's own log: what it saw and did, in the game log's format (log-view.js
+// ---- The launcher's own log: what it saw and did, in the game log's format (journal.js
 // reads both), kept in OPFS beside the launch logs and sent to the dev server's /log. ----
 const launcherLog = logs.createLaunchLog(Date.now(), 'launcher');
 const LOG_SESSION = `launcher-${launcherLog.name.split('.')[0]}`;

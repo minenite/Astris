@@ -5,7 +5,7 @@ import {createLaunchLog} from './launch-logs.js';
 import * as prefs from './settings.js';
 import {t, setLang, apply} from './i18n.js';
 import {startSky} from './sky.js';
-import {analyze} from './log-view.js';
+import {analyze} from './journal.js';
 import * as sounds from './sounds.js';
 import * as resources from './horizon-import.js';
 import * as peer from './peer.js';
