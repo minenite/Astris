@@ -27,6 +27,20 @@ export function runRustWorker(initSync, entryPoint, {destroyArgs}) {
     try { request.send(); } catch (_) { return undefined; }
     return request.status === 200 || request.status === 0 ? new Uint8Array(request.response) : undefined;
   };
+  // Online-mode session/join: Rust calls this from horizon-net Worker threads.
+  // Must live on the Worker's globalThis (main-thread installJoinProxy is invisible here).
+  globalThis.horizonAuthJoin = body => {
+    try {
+      const xhr = new XMLHttpRequest();
+      xhr.open('POST', '/auth/join', false);
+      xhr.setRequestHeader('Content-Type', 'application/json');
+      xhr.send(typeof body === 'string' ? body : JSON.stringify(body));
+      if (xhr.status >= 200 && xhr.status < 300) return '';
+      return `${xhr.status}:${xhr.responseText || ''}`;
+    } catch (error) {
+      return `0:${error.message || 'join proxy failed'}`;
+    }
+  };
   self.addEventListener('error', event => send('failure', event.error?.stack || event.message));
   self.addEventListener('unhandledrejection', event => send('failure', event.reason?.stack || String(event.reason)));
 
